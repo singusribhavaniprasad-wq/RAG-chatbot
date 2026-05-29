@@ -1,0 +1,6 @@
+{
+  "name": "DocuRAG Assistant",
+  "description": "Advanced Domain-Specific RAG Chatbot using Jetpack Compose, Room Database, and the Gemini API with automated semantic search, evaluation metrics, and tagging.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

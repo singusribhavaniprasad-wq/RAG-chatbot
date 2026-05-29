@@ -1,0 +1,25 @@
+package com.example.network
+
+import retrofit2.http.Body
+import retrofit2.http.POST
+import retrofit2.http.Query
+
+interface GeminiApiService {
+    @POST("v1beta/models/gemini-3.5-flash:generateContent")
+    suspend fun generateContent(
+        @Query("key") apiKey: String,
+        @Body request: GeminiRequest
+    ): GeminiResponse
+
+    @POST("v1beta/models/gemini-embedding-2-preview:embedContent")
+    suspend fun embedContent(
+        @Query("key") apiKey: String,
+        @Body request: EmbeddingRequest
+    ): EmbeddingResponse
+
+    @POST("v1beta/models/gemini-embedding-2-preview:batchEmbedContents")
+    suspend fun batchEmbedContents(
+        @Query("key") apiKey: String,
+        @Body request: BatchEmbeddingRequest
+    ): BatchEmbeddingResponse
+}
