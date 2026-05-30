@@ -35,7 +35,7 @@ interface ChatDao {
     @Query("SELECT * FROM chat_entries WHERE sessionId = :sessionId ORDER BY timestamp ASC")
     fun getChatEntriesForSession(sessionId: String): Flow<List<ChatEntry>>
 
-    @Query("SELECT DISTINCT sessionId FROM chat_entries ORDER BY timestamp DESC")
+    @Query("SELECT sessionId FROM chat_entries GROUP BY sessionId ORDER BY MAX(timestamp) DESC")
     fun getDistinctSessionIds(): Flow<List<String>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

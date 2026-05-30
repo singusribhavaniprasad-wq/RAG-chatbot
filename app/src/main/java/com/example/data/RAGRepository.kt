@@ -31,7 +31,8 @@ class RAGRepository(context: Context) {
         val documents = DefaultKnowledgeBase.getDefaultDocuments()
         // Determine emptiness via local search or counts
         val existing = documentDao.searchDocumentsLocal("")
-        if (existing.size < 50) {
+        val containsPaymentIssues = existing.any { it.title == "Analysing Common Card Processing Failures" }
+        if (existing.isEmpty() || !containsPaymentIssues) {
             documentDao.deleteAllDocuments()
             documentDao.insertDocuments(documents)
             Log.d("RAGRepository", "Knowledge base pre-populated with ${documents.size} entries.")
@@ -222,7 +223,7 @@ class RAGRepository(context: Context) {
         }
 
         return@withContext results
-            .filter { it.second > 0.05f }
+            .filter { it.second > 0.0f }
             .sortedByDescending { it.second }
             .take(topK)
     }

@@ -3,7 +3,7 @@ package com.example.data
 import android.content.Context
 import androidx.room.*
 
-@Database(entities = [Document::class, ChatEntry::class], version = 1, exportSchema = false)
+@Database(entities = [Document::class, ChatEntry::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun documentDao(): DocumentDao
     abstract fun chatDao(): ChatDao
@@ -19,7 +19,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "rag_database"
                 )
-                .fallbackToDestructiveMigration()
+                .fallbackToDestructiveMigration(true)
                 .build()
                 INSTANCE = instance
                 instance

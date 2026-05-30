@@ -1,12 +1,14 @@
 package com.example.ui
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
 import com.example.data.*
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -24,6 +26,7 @@ sealed interface RAGState {
     data class Error(val message: String) : RAGState
 }
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class RAGViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = RAGRepository(application)
 
@@ -52,7 +55,9 @@ class RAGViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // App API Key State
-    private val _apiKey = MutableStateFlow(BuildConfig.GEMINI_API_KEY)
+    private val _apiKey = MutableStateFlow(
+        if (BuildConfig.GEMINI_API_KEY == "MY_GEMINI_API_KEY" || BuildConfig.GEMINI_API_KEY == "YOUR_GEMINI_API_KEY") "" else BuildConfig.GEMINI_API_KEY
+    )
     val apiKey: StateFlow<String> = _apiKey.asStateFlow()
 
     // Last Turn grounding state
@@ -75,13 +80,17 @@ class RAGViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         viewModelScope.launch {
-            repository.prepopulateIfEmpty()
-            
-            // Set initial session
-            repository.distinctSessions.firstOrNull()?.firstOrNull()?.let {
-                _selectedSessionId.value = it
-            } ?: run {
-                createNewSession()
+            try {
+                repository.prepopulateIfEmpty()
+                
+                // Set initial session
+                repository.distinctSessions.firstOrNull()?.firstOrNull()?.let {
+                    _selectedSessionId.value = it
+                } ?: run {
+                    createNewSession()
+                }
+            } catch (e: Exception) {
+                Log.e("RAGViewModel", "Error prepopulating database or loading sessions: ${e.message}", e)
             }
         }
     }
@@ -105,14 +114,18 @@ class RAGViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteSession(sessionId: String) {
         viewModelScope.launch {
-            repository.deleteSession(sessionId)
-            if (_selectedSessionId.value == sessionId) {
-                val sessions = distinctSessions.value.filter { it != sessionId }
-                if (sessions.isNotEmpty()) {
-                    _selectedSessionId.value = sessions.first()
-                } else {
-                    createNewSession()
+            try {
+                repository.deleteSession(sessionId)
+                if (_selectedSessionId.value == sessionId) {
+                    val sessions = distinctSessions.value.filter { it != sessionId }
+                    if (sessions.isNotEmpty()) {
+                        _selectedSessionId.value = sessions.first()
+                    } else {
+                        createNewSession()
+                    }
                 }
+            } catch (e: Exception) {
+                Log.e("RAGViewModel", "Error deleting session: ${e.message}", e)
             }
         }
     }
@@ -124,80 +137,108 @@ class RAGViewModel(application: Application) : AndroidViewModel(application) {
         if (currentSession.isEmpty()) return
 
         viewModelScope.launch {
-            // 1. Insert user message in database
-            val userEntry = ChatEntry(
-                sessionId = currentSession,
-                role = "user",
-                content = query
-            )
-            repository.insertChatEntry(userEntry)
+            try {
+                // 1. Insert user message in database
+                val userEntry = ChatEntry(
+                    sessionId = currentSession,
+                    role = "user",
+                    content = query
+                )
+                repository.insertChatEntry(userEntry)
 
-            _ragState.value = RAGState.Retrieving
-            _lastRetrievedDocs.value = emptyList()
-            _denseWarning.value = null
+                _ragState.value = RAGState.Retrieving
+                _lastRetrievedDocs.value = emptyList()
+                _denseWarning.value = null
 
-            // 2. Perform Retrieval
-            val retrieved: List<Pair<Document, Float>>
-            var warning: String? = null
+                // 2. Perform Retrieval
+                val retrieved: List<Pair<Document, Float>>
+                var warning: String? = null
 
-            if (_searchMode.value == SearchMode.LOCAL_TFIDF) {
-                retrieved = repository.retrieveLocalTfIdf(query, topK = 3)
-            } else {
-                val (hits, warn) = repository.retrieveDenseVector(_apiKey.value, query, topK = 3)
-                retrieved = hits
-                _denseWarning.value = warn
-                warning = warn
+                if (_searchMode.value == SearchMode.LOCAL_TFIDF) {
+                    retrieved = repository.retrieveLocalTfIdf(query, topK = 3)
+                } else {
+                    val (hits, warn) = repository.retrieveDenseVector(_apiKey.value, query, topK = 3)
+                    retrieved = hits
+                    _denseWarning.value = warn
+                    warning = warn
+                }
+
+                _lastRetrievedDocs.value = retrieved
+                val docEntities = retrieved.map { it.first }
+
+                // Calculate retrieval Precision@K and MRR based on exact tag match or category overlap
+                val k = retrieved.size
+                val relevantCount = retrieved.count { (doc, score) ->
+                    doc.tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }.any { tag -> query.contains(tag, ignoreCase = true) } || score > 0.35f
+                }
+                val precisionAtK = if (k > 0) {
+                    val p = relevantCount.toFloat() / k
+                    if (p.isNaN() || p.isInfinite()) 0f else p
+                } else 0f
+                val documentMatchCount = documentsWithQueryMatchCount(query)
+                val recallAtK = if (documentMatchCount > 0) {
+                    val r = relevantCount.toFloat() / documentMatchCount
+                    if (r.isNaN() || r.isInfinite()) 0f else r
+                } else 1f
+                
+                // Reciprocal Rank calculation
+                val firstRelevantIdx = retrieved.indexOfFirst { (doc, score) ->
+                    doc.tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }.any { tag -> query.contains(tag, ignoreCase = true) } || score > 0.35f
+                }
+                val mrr = if (firstRelevantIdx != -1) {
+                    val m = 1f / (firstRelevantIdx + 1f)
+                    if (m.isNaN() || m.isInfinite()) 0f else m
+                } else 0f
+
+                _ragState.value = RAGState.Generating
+
+                // 3. Generate Grounded Answer
+                val answer = if (warning != null && retrieved.isEmpty()) {
+                    "Retrieval Error: $warning\n\nPlease ensure your API Key is valid and you have precomputed document embeddings in the 'Knowledge Base' tab."
+                } else {
+                    repository.generateGroundedResponse(_apiKey.value, query, docEntities)
+                }
+
+                _ragState.value = RAGState.Evaluating
+
+                // 4. Auto-tag and Evaluate response (LLM-as-a-Judge)
+                val eval = repository.evaluateAndTagResponse(_apiKey.value, query, docEntities, answer)
+
+                val cleanFaithful = if (eval.faithfulness.isNaN() || eval.faithfulness.isInfinite()) 0f else eval.faithfulness
+                val cleanRelevance = if (eval.answerRelevance.isNaN() || eval.answerRelevance.isInfinite()) 0f else eval.answerRelevance
+
+                // 5. Save model response with metrics
+                val modelEntry = ChatEntry(
+                    sessionId = currentSession,
+                    role = "model",
+                    content = answer,
+                    retrievedDocsJson = docEntities.joinToString("|") { it.title },
+                    qnaTags = eval.tags,
+                    isEvaluated = true,
+                    precisionAtK = precisionAtK,
+                    recallAtK = recallAtK,
+                    mrrScore = mrr,
+                    faithfulnessScore = cleanFaithful,
+                    relevanceScore = cleanRelevance,
+                    hallucinationRate = if (eval.isHallucinated) 1f else 0f
+                )
+                repository.insertChatEntry(modelEntry)
+                _ragState.value = RAGState.Idle
+            } catch (e: Exception) {
+                Log.e("RAGViewModel", "Error in askQuestion workflow: ${e.message}", e)
+                try {
+                    val errorEntry = ChatEntry(
+                        sessionId = currentSession,
+                        role = "model",
+                        content = "An unexpected error occurred during processing: ${e.message ?: "Unknown error"}",
+                        isEvaluated = false
+                    )
+                    repository.insertChatEntry(errorEntry)
+                } catch (dbEx: Exception) {
+                    Log.e("RAGViewModel", "Failed to write error entry to database: ${dbEx.message}", dbEx)
+                }
+                _ragState.value = RAGState.Idle
             }
-
-            _lastRetrievedDocs.value = retrieved
-            val docEntities = retrieved.map { it.first }
-
-            // Calculate retrieval Precision@K and MRR based on exact tag match or category overlap
-            // Since this is evaluated programmatically, we check if the query contains words matching document tags
-            val k = retrieved.size
-            val relevantCount = retrieved.count { (doc, score) ->
-                doc.tags.split(",").map { it.trim() }.any { tag -> query.contains(tag, ignoreCase = true) } || score > 0.35f
-            }
-            val precisionAtK = if (k > 0) relevantCount.toFloat() / k else 0f
-            val recallAtK = if (documentsWithQueryMatchCount(query) > 0) relevantCount.toFloat() / documentsWithQueryMatchCount(query) else 1f
-            
-            // Reciprocal Rank calculation
-            val firstRelevantIdx = retrieved.indexOfFirst { (doc, score) ->
-                doc.tags.split(",").map { it.trim() }.any { tag -> query.contains(tag, ignoreCase = true) } || score > 0.35f
-            }
-            val mrr = if (firstRelevantIdx != -1) 1f / (firstRelevantIdx + 1f) else 0f
-
-            _ragState.value = RAGState.Generating
-
-            // 3. Generate Grounded Answer
-            val answer = if (warning != null && retrieved.isEmpty()) {
-                "Retrieval Error: $warning\n\nPlease ensure your API Key is valid and you have precomputed document embeddings in the 'Knowledge Base' tab."
-            } else {
-                repository.generateGroundedResponse(_apiKey.value, query, docEntities)
-            }
-
-            _ragState.value = RAGState.Evaluating
-
-            // 4. Auto-tag and Evaluate response (LLM-as-a-Judge)
-            val eval = repository.evaluateAndTagResponse(_apiKey.value, query, docEntities, answer)
-
-            // 5. Save model response with metrics
-            val modelEntry = ChatEntry(
-                sessionId = currentSession,
-                role = "model",
-                content = answer,
-                retrievedDocsJson = docEntities.joinToString("|") { it.title },
-                qnaTags = eval.tags,
-                isEvaluated = true,
-                precisionAtK = precisionAtK,
-                recallAtK = recallAtK,
-                mrrScore = mrr,
-                faithfulnessScore = eval.faithfulness,
-                relevanceScore = eval.answerRelevance,
-                hallucinationRate = if (eval.isHallucinated) 1f else 0f
-            )
-            repository.insertChatEntry(modelEntry)
-            _ragState.value = RAGState.Idle
         }
     }
 
@@ -205,7 +246,7 @@ class RAGViewModel(application: Application) : AndroidViewModel(application) {
         val total = allDocuments.value
         if (total.isEmpty()) return 1
         return total.count { doc ->
-            doc.tags.split(",").map { it.trim() }.any { tag -> query.contains(tag, ignoreCase = true) }
+            doc.tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }.any { tag -> query.contains(tag, ignoreCase = true) }
         }.coerceAtLeast(1)
     }
 
@@ -253,15 +294,25 @@ class RAGViewModel(application: Application) : AndroidViewModel(application) {
                 // Save without embedding
             }
 
-            repository.insertDocument(tempDoc)
-            _ragState.value = RAGState.Idle
-            onComplete(true)
+            try {
+                repository.insertDocument(tempDoc)
+                _ragState.value = RAGState.Idle
+                onComplete(true)
+            } catch (e: Exception) {
+                Log.e("RAGViewModel", "Error inserting document: ${e.message}", e)
+                _ragState.value = RAGState.Error("DB Insertion Failed: ${e.message}")
+                onComplete(false)
+            }
         }
     }
 
     fun deleteDocument(id: Int) {
         viewModelScope.launch {
-            repository.deleteDocument(id)
+            try {
+                repository.deleteDocument(id)
+            } catch (e: Exception) {
+                Log.e("RAGViewModel", "Error deleting document: ${e.message}", e)
+            }
         }
     }
 
@@ -294,7 +345,11 @@ class RAGViewModel(application: Application) : AndroidViewModel(application) {
 
     fun resetAllData() {
         viewModelScope.launch {
-            repository.clearAllData()
+            try {
+                repository.clearAllData()
+            } catch (e: Exception) {
+                Log.e("RAGViewModel", "Error resetting all data: ${e.message}", e)
+            }
         }
     }
 }

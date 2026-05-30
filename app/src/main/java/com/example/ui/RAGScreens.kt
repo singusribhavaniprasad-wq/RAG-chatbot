@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -58,6 +59,10 @@ fun RAGDashboard(viewModel: RAGViewModel) {
     val apiKeyState by viewModel.apiKey.collectAsStateWithLifecycle()
     var isEditingKey by remember { mutableStateOf(false) }
     var tempKey by remember { mutableStateOf(apiKeyState) }
+
+    LaunchedEffect(apiKeyState) {
+        tempKey = apiKeyState
+    }
 
     val ragState by viewModel.ragState.collectAsStateWithLifecycle()
     val isEmbedding by viewModel.isEmbedding.collectAsStateWithLifecycle()
@@ -235,13 +240,13 @@ fun RAGDashboard(viewModel: RAGViewModel) {
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
                     text = { Text("RAG Chat", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = if (selectedTab == 0) AccentCyan else TextMuted) },
-                    icon = { Icon(Icons.Default.Send, contentDescription = "", modifier = Modifier.size(18.dp)) }
+                    icon = { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "", modifier = Modifier.size(18.dp)) }
                 )
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
                     text = { Text("Documents", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = if (selectedTab == 1) AccentCyan else TextMuted) },
-                    icon = { Icon(Icons.Default.List, contentDescription = "", modifier = Modifier.size(18.dp)) }
+                    icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = "", modifier = Modifier.size(18.dp)) }
                 )
                 Tab(
                     selected = selectedTab == 2,
@@ -388,7 +393,7 @@ fun ChatTab(viewModel: RAGViewModel) {
                     }
                 }
             } else {
-                items(chatEntries) { entry ->
+                items(chatEntries, key = { it.id }) { entry ->
                     MessageRow(entry = entry)
                 }
             }
@@ -400,29 +405,42 @@ fun ChatTab(viewModel: RAGViewModel) {
                         RAGState.Retrieving -> "Searching vector space for matching documentation..."
                         RAGState.Generating -> "Retrieval complete. Synthesizing grounded response using model..."
                         RAGState.Evaluating -> "Evaluating faithfulness and auto-generating Q&A tags..."
+                        is RAGState.Error -> "Error: ${(ragState as RAGState.Error).message}"
                         else -> "Processing..."
                     }
+                    val isError = ragState is RAGState.Error
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 4.dp),
-                        colors = CardDefaults.cardColors(containerColor = CardSlate.copy(alpha = 0.5f)),
-                        border = BorderStroke(1.dp, BorderSlate.copy(alpha = 0.5f))
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isError) AccentRed.copy(alpha = 0.15f) else CardSlate.copy(alpha = 0.5f)
+                        ),
+                        border = BorderStroke(1.dp, if (isError) AccentRed.copy(alpha = 0.5f) else BorderSlate.copy(alpha = 0.5f))
                     ) {
                         Row(
                             modifier = Modifier.padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                color = AccentCyan,
-                                strokeWidth = 2.dp
-                            )
+                            if (isError) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = "Error",
+                                    tint = AccentRed,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            } else {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    color = AccentCyan,
+                                    strokeWidth = 2.dp
+                                )
+                            }
                             Spacer(modifier = Modifier.width(12.dp))
                             Text(
                                 text = stepText,
                                 fontSize = 11.sp,
-                                color = TextMuted,
+                                color = if (isError) AccentRed else TextMuted,
                                 fontFamily = FontFamily.Monospace
                             )
                         }
@@ -457,9 +475,9 @@ fun ChatTab(viewModel: RAGViewModel) {
                             modifier = Modifier.size(12.dp)
                         )
                     }
-                    if (lastWarning != null) {
+                    lastWarning?.let { warning ->
                         Text(
-                            text = lastWarning!!,
+                            text = warning,
                             color = AccentOrange,
                             fontSize = 11.sp,
                             lineHeight = 15.sp,
@@ -470,7 +488,7 @@ fun ChatTab(viewModel: RAGViewModel) {
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.padding(top = 6.dp)
                     ) {
-                        items(lastGroundedDocs) { (doc, score) ->
+                        items(lastGroundedDocs, key = { it.first.id }) { (doc, score) ->
                             Card(
                                 colors = CardDefaults.cardColors(containerColor = DeepNavy),
                                 border = BorderStroke(1.dp, BorderSlate)
@@ -523,7 +541,7 @@ fun ChatTab(viewModel: RAGViewModel) {
                 OutlinedTextField(
                     value = inputQuery,
                     onValueChange = { inputQuery = it },
-                    placeholder = { Text("Ask about state, DB, testing or plugins...", color = TextMuted) },
+                    placeholder = { Text("Ask about payments, logins, onboarding or API errors...", color = TextMuted) },
                     textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextLight),
                     maxLines = 3,
                     modifier = Modifier
@@ -565,7 +583,7 @@ fun ChatTab(viewModel: RAGViewModel) {
                         .testTag("send_query_button")
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Send,
+                        imageVector = Icons.AutoMirrored.Filled.Send,
                         contentDescription = "Send Query",
                         tint = if (inputQuery.trim().isNotEmpty()) DeepNavy else TextMuted
                     )
@@ -652,14 +670,14 @@ fun MessageRow(entry: ChatEntry) {
                                 .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            entry.qnaTags.split(",").forEach { tag ->
+                            entry.qnaTags.split(",").map { it.trim() }.filter { it.isNotEmpty() }.forEach { tag ->
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(4.dp))
                                         .background(BorderSlate)
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
-                                    Text(text = tag.trim(), fontSize = 9.sp, color = TextLight)
+                                    Text(text = tag, fontSize = 9.sp, color = TextLight)
                                 }
                             }
                         }
@@ -686,11 +704,12 @@ fun MessageRow(entry: ChatEntry) {
 
 @Composable
 fun ScoreBadge(label: String, score: Float, negative: Boolean = false) {
-    val formatted = DecimalFormat("#.##").format(score)
+    val cleanScore = (if (score.isNaN() || score.isInfinite()) 0f else score).coerceIn(0f, 1f)
+    val formatted = String.format(java.util.Locale.US, "%.2f", cleanScore)
     val color = if (negative) {
-        if (score > 0.3f) AccentRed else AccentGreen
+        if (cleanScore > 0.3f) AccentRed else AccentGreen
     } else {
-        if (score > 0.7f) AccentGreen else if (score > 0.40f) AccentOrange else AccentRed
+        if (cleanScore > 0.7f) AccentGreen else if (cleanScore > 0.40f) AccentOrange else AccentRed
     }
     Row(
         modifier = Modifier
@@ -823,7 +842,7 @@ fun DocumentsTab(viewModel: RAGViewModel) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
             contentPadding = PaddingValues(bottom = 24.dp)
         ) {
-            items(filteredDocs) { doc ->
+            items(filteredDocs, key = { it.id }) { doc ->
                 DocumentCard(doc = doc, onDeleteClick = { viewModel.deleteDocument(doc.id) })
             }
         }
@@ -903,14 +922,14 @@ fun DocumentCard(doc: Document, onDeleteClick: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                doc.tags.split(",").take(5).forEach { tag ->
+                doc.tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }.take(5).forEach { tag ->
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(4.dp))
                             .background(DeepNavy)
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
-                        Text(text = tag.trim(), fontSize = 9.sp, color = TextMuted)
+                        Text(text = tag, fontSize = 9.sp, color = TextMuted)
                     }
                 }
             }
@@ -1057,7 +1076,8 @@ fun DirectSearchTab(viewModel: RAGViewModel) {
     var currentSeekWarning by remember { mutableStateOf<String?>(null) }
 
     val scope = rememberCoroutineScope()
-    val repository = RAGRepository(LocalContext.current)
+    val context = LocalContext.current
+    val repository = remember { RAGRepository(context) }
 
     Column(
         modifier = Modifier
@@ -1152,14 +1172,21 @@ fun DirectSearchTab(viewModel: RAGViewModel) {
                                 inProgress = true
                                 currentSeekWarning = null
                                 scope.launch {
-                                    if (searchMode == SearchMode.LOCAL_TFIDF) {
-                                        searchResults = repository.retrieveLocalTfIdf(queryText, topK = 4)
-                                    } else {
-                                        val parseResult = repository.retrieveDenseVector(apiKeyState, queryText, topK = 4)
-                                        searchResults = parseResult.first
-                                        currentSeekWarning = parseResult.second
+                                    try {
+                                        if (searchMode == SearchMode.LOCAL_TFIDF) {
+                                            searchResults = repository.retrieveLocalTfIdf(queryText, topK = 4)
+                                        } else {
+                                            val parseResult = repository.retrieveDenseVector(apiKeyState, queryText, topK = 4)
+                                            searchResults = parseResult.first
+                                            currentSeekWarning = parseResult.second
+                                        }
+                                    } catch (e: Exception) {
+                                        android.util.Log.e("DirectSearch", "Search failed: ${e.message}", e)
+                                        currentSeekWarning = "Search error: ${e.message ?: "Unknown error"}"
+                                        searchResults = emptyList()
+                                    } finally {
+                                        inProgress = false
                                     }
-                                    inProgress = false
                                 }
                             }
                         },
@@ -1184,7 +1211,7 @@ fun DirectSearchTab(viewModel: RAGViewModel) {
                 CircularProgressIndicator(color = AccentCyan)
             }
         } else {
-            if (currentSeekWarning != null) {
+            currentSeekWarning?.let { warning ->
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1195,7 +1222,7 @@ fun DirectSearchTab(viewModel: RAGViewModel) {
                         .padding(12.dp)
                 ) {
                     Text(
-                        text = currentSeekWarning!!,
+                        text = warning,
                         color = AccentOrange,
                         fontSize = 12.sp,
                         lineHeight = 16.sp
@@ -1224,7 +1251,7 @@ fun DirectSearchTab(viewModel: RAGViewModel) {
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(searchResults) { (doc, score) ->
+                    items(searchResults, key = { it.first.id }) { (doc, score) ->
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(containerColor = CardSlate),
@@ -1351,12 +1378,13 @@ fun EvaluationTab(viewModel: RAGViewModel) {
         } else {
             // Aggregate Math
             val aggregateSize = modelLogs.size.toFloat()
-            val avgPrecision = modelLogs.map { it.precisionAtK }.sum() / aggregateSize
-            val avgRecall = modelLogs.map { it.recallAtK }.sum() / aggregateSize
-            val avgMRR = modelLogs.map { it.mrrScore }.sum() / aggregateSize
-            val avgFaithful = modelLogs.map { it.faithfulnessScore }.sum() / aggregateSize
-            val avgRelevance = modelLogs.map { it.relevanceScore }.sum() / aggregateSize
-            val avgHallucination = modelLogs.map { it.hallucinationRate }.sum() / aggregateSize
+            fun Float.clean(): Float = if (this.isNaN() || this.isInfinite()) 0f else this
+            val avgPrecision = modelLogs.map { it.precisionAtK.clean() }.sum() / aggregateSize
+            val avgRecall = modelLogs.map { it.recallAtK.clean() }.sum() / aggregateSize
+            val avgMRR = modelLogs.map { it.mrrScore.clean() }.sum() / aggregateSize
+            val avgFaithful = modelLogs.map { it.faithfulnessScore.clean() }.sum() / aggregateSize
+            val avgRelevance = modelLogs.map { it.relevanceScore.clean() }.sum() / aggregateSize
+            val avgHallucination = modelLogs.map { it.hallucinationRate.clean() }.sum() / aggregateSize
 
             // Layout Gauges Row
             Card(
@@ -1512,11 +1540,12 @@ fun CircularScoreGauge(
     color: Color,
     isNegativeMetric: Boolean = false
 ) {
-    val rawPercentage = (score * 100).toInt().coerceIn(0, 100)
+    val cleanScore = (if (score.isNaN() || score.isInfinite()) 0f else score).coerceIn(0f, 1f)
+    val rawPercentage = (cleanScore * 100).toInt().coerceIn(0, 100)
     
     // Invert rating display color if it is a negative metric like Hallucination
     val displayColor = if (isNegativeMetric) {
-        if (score > 0.3f) AccentRed else AccentGreen
+        if (cleanScore > 0.3f) AccentRed else AccentGreen
     } else {
         color
     }
@@ -1541,7 +1570,7 @@ fun CircularScoreGauge(
                 drawArc(
                     color = displayColor,
                     startAngle = -90f,
-                    sweepAngle = score * 360f,
+                    sweepAngle = cleanScore * 360f,
                     useCenter = false,
                     style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
                 )
